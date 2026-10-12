@@ -5,11 +5,27 @@
 // Dept/Month/Batch/Status filters, forecast, drill-down (with its own filter
 // and extra stats). No pivot. No charting library needed.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 /* Your sheet's "Publish to web -> CSV" link. This is the live data source. */
 const CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vTpoPoKZu30PSa4aKLSfB039K8CAWtebdMXDL3uYoC-p7zVJ1iB8lnG-Yf6b02fviSg_vZOMVLSqyDT/pub?gid=491866189&single=true&output=csv";
+
+/* Login accounts — a simple front-end gate. Add/remove people or change passwords
+   here, then push to redeploy. NOTE: this is NOT real security — these credentials
+   ship inside the page and the sheet data is public. For real protection use the
+   Apps Script login step (see chat notes). */
+const USERS: Record<string, string> = {
+  "hasnain.pirzada@dubizzlelabs.com": "12345",
+  "zain.ghori@dubizzlelabs.com": "12345",
+};
+function getPassword(email: string) {
+  try { const o = JSON.parse(localStorage.getItem("opd_pw") || "{}"); if (o[email]) return o[email] as string; } catch {}
+  return USERS[email];
+}
+function setStoredPassword(email: string, pw: string) {
+  try { const o = JSON.parse(localStorage.getItem("opd_pw") || "{}"); o[email] = pw; localStorage.setItem("opd_pw", JSON.stringify(o)); } catch {}
+}
 
 
 /* ---- palette: red + grey only ---- */
@@ -148,6 +164,8 @@ export default function Home() {
   const [drill, setDrill] = useState<{ type: "month" | "dept" | "batch"; key: string } | null>(null);
   const [drillStatus, setDrillStatus] = useState("All");
   const [galleryDim, setGalleryDim] = useState<"dept" | "batch" | "month">("dept");
+  const [user, setUser] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
 
   function load(silent = false) {
     if (!silent) { setLoading(true); setErr(""); }
@@ -161,6 +179,9 @@ export default function Home() {
     setUpdated(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
   }
   useEffect(() => { load(); const id = setInterval(() => load(true), 5 * 60 * 1000); return () => clearInterval(id); }, []);
+  useEffect(() => { try { setUser(sessionStorage.getItem("opd_user")); } catch {} setAuthReady(true); }, []);
+  const login = (email: string) => { try { sessionStorage.setItem("opd_user", email); } catch {} setUser(email); };
+  const logout = () => { try { sessionStorage.removeItem("opd_user"); } catch {} setUser(null); };
 
   const batchNum = (b: string) => { const n = parseInt(b.replace(/\D/g, ""), 10); return isNaN(n) ? 999 : n; };
   const months = useMemo(() => uniq(all.map((r) => r.monthKey)).filter((k) => k !== "zzz").sort()
@@ -227,6 +248,8 @@ export default function Home() {
 
   /* ---------- render ---------- */
   const font = { fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' };
+  if (!authReady) return <div style={{ ...font, minHeight: "100vh", background: PAGE }} />;
+  if (!user) return <Login onLogin={login} />;
   if (loading) return <div style={{ ...font, minHeight: "100vh", background: PAGE, color: CHARCOAL, display: "flex", alignItems: "center", justifyContent: "center" }}>Loading live data…</div>;
   if (err) return <div style={{ ...font, minHeight: "100vh", background: PAGE, color: GREASE, display: "flex", flexDirection: "column", gap: 12, alignItems: "center", justifyContent: "center" }}><div style={{ fontWeight: 700 }}>{err}</div><button onClick={() => load()} className="px-4 py-2 rounded-lg text-white" style={{ background: FLAME }}>Try again</button></div>;
 
@@ -243,6 +266,8 @@ export default function Home() {
           ))}
         </nav>
         <div className="mt-auto text-xs" style={{ color: SMOKE }}>
+          <div className="truncate mb-2" style={{ color: "#C9CACB" }} title={user || ""}>{user}</div>
+          <button onClick={logout} className="w-full mb-4 px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: "rgba(255,255,255,0.08)", color: "#fff" }}>Log out</button>
           <div className="flex items-center gap-2"><span className="inline-block w-2 h-2 rounded-full" style={{ background: FLAME }} />{isSample ? "Demo data" : "Live from Sheets"}</div>
           <div className="mt-1">OPD Reimbursements · 2026</div>
         </div>
@@ -753,5 +778,85 @@ function Gallery({ rows, dim, setDim, onDrill }: any) {
         {!groups.length && <div className="text-sm col-span-full" style={{ color: SMOKE }}>No claims match these filters.</div>}
       </div>
     </>
+  );
+}
+
+function Login({ onLogin }: { onLogin: (email: string) => void }) {
+  const [mode, setMode] = useState<"login" | "change">("login");
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [curPw, setCurPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [msg, setMsg] = useState("");
+  const [ok, setOk] = useState("");
+
+  const doLogin = () => {
+    const e = email.trim().toLowerCase();
+    if (getPassword(e) && getPassword(e) === pw) onLogin(e);
+    else setMsg("Wrong email or password.");
+  };
+  const doChange = () => {
+    const e = email.trim().toLowerCase();
+    if (!getPassword(e)) { setMsg("No account with that email."); return; }
+    if (getPassword(e) !== curPw) { setMsg("Current password is wrong."); return; }
+    if (newPw.length < 4) { setMsg("New password must be at least 4 characters."); return; }
+    setStoredPassword(e, newPw); setOk("Password updated — you can sign in now."); setMsg(""); setMode("login"); setPw(""); setCurPw(""); setNewPw("");
+  };
+
+  const inp: CSSProperties = { width: "100%", padding: "10px 12px", margin: "6px 0 14px", borderRadius: 10, border: `1px solid ${CLOUD}`, fontSize: 14, color: GREASE, outline: "none", boxSizing: "border-box" };
+  const btn: CSSProperties = { width: "100%", padding: "11px", borderRadius: 10, background: FLAME, color: "#fff", fontWeight: 600, fontSize: 14, border: "none", cursor: "pointer", marginTop: 4 };
+
+  return (
+    <div style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif', minHeight: "100vh", background: INK, position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <style>{`
+        @keyframes opdFloat { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(28px,-38px) scale(1.15)} }
+        @keyframes opdCard { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
+        .opd-blob{position:absolute;border-radius:9999px;filter:blur(64px);animation:opdFloat 9s ease-in-out infinite}
+        @media (prefers-reduced-motion:reduce){.opd-blob{animation:none}}
+      `}</style>
+      <div className="opd-blob" style={{ width: 340, height: 340, top: -70, left: -50, background: "#E00000", opacity: 0.35 }} />
+      <div className="opd-blob" style={{ width: 300, height: 300, bottom: -60, right: -40, background: "#7E1515", opacity: 0.4, animationDelay: "-3s" }} />
+      <div className="opd-blob" style={{ width: 220, height: 220, top: "42%", right: "22%", background: "#3a3b3c", opacity: 0.5, animationDelay: "-6s" }} />
+
+      <div style={{ position: "relative", width: "100%", maxWidth: 400, animation: "opdCard .5s ease both" }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ fontWeight: 900, fontSize: 30, letterSpacing: "-0.02em", color: "#fff" }}>dubizzle<span style={{ color: FLAME }}>labs</span></div>
+          <div style={{ fontSize: 12, letterSpacing: "0.22em", color: SMOKE, marginTop: 4 }}>HR ANALYTICS</div>
+        </div>
+        <div style={{ background: "#fff", borderRadius: 18, padding: 28, boxShadow: "0 24px 64px rgba(0,0,0,0.45)" }}>
+          <h1 style={{ fontSize: 18, fontWeight: 700, color: GREASE, margin: 0 }}>{mode === "login" ? "Sign in" : "Change password"}</h1>
+          <p style={{ fontSize: 13, color: CHARCOAL, margin: "4px 0 18px" }}>OPD Reimbursements dashboard</p>
+
+          <label style={{ fontSize: 12, color: CHARCOAL }}>Email</label>
+          <input value={email} onChange={(e) => { setEmail(e.target.value); setMsg(""); }} onKeyDown={(e) => { if (e.key === "Enter") mode === "login" ? doLogin() : doChange(); }} autoFocus placeholder="you@dubizzlelabs.com" style={inp} />
+
+          {mode === "login" ? (
+            <>
+              <label style={{ fontSize: 12, color: CHARCOAL }}>Password</label>
+              <input type="password" value={pw} onChange={(e) => { setPw(e.target.value); setMsg(""); }} onKeyDown={(e) => { if (e.key === "Enter") doLogin(); }} placeholder="••••••" style={inp} />
+              <button onClick={doLogin} style={btn}>Log in</button>
+            </>
+          ) : (
+            <>
+              <label style={{ fontSize: 12, color: CHARCOAL }}>Current password</label>
+              <input type="password" value={curPw} onChange={(e) => setCurPw(e.target.value)} style={inp} />
+              <label style={{ fontSize: 12, color: CHARCOAL }}>New password</label>
+              <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doChange(); }} style={inp} />
+              <button onClick={doChange} style={btn}>Update password</button>
+            </>
+          )}
+
+          {msg && <p style={{ color: FLAME, fontSize: 13, marginTop: 10 }}>{msg}</p>}
+          {ok && <p style={{ color: "#1F7A3D", fontSize: 13, marginTop: 10 }}>{ok}</p>}
+
+          <div style={{ marginTop: 16, textAlign: "center" }}>
+            <button onClick={() => { setMode(mode === "login" ? "change" : "login"); setMsg(""); setOk(""); }} style={{ background: "none", border: "none", color: CHARCOAL, fontSize: 13, cursor: "pointer", textDecoration: "underline" }}>
+              {mode === "login" ? "Change / reset password" : "Back to sign in"}
+            </button>
+          </div>
+        </div>
+        <p style={{ textAlign: "center", color: SMOKE, fontSize: 11, marginTop: 16 }}>Dubizzle Labs · HR · authorised users only</p>
+      </div>
+    </div>
   );
 }
