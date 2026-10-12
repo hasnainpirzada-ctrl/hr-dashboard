@@ -18,6 +18,7 @@ const CSV_URL =
 const USERS: Record<string, string> = {
   "hasnain.pirzada@dubizzlelabs.com": "12345",
   "zain.ghori@dubizzlelabs.com": "12345",
+  "hr@dubizzlelabs.com": "12345",
 };
 function getPassword(email: string) {
   try { const o = JSON.parse(localStorage.getItem("opd_pw") || "{}"); if (o[email]) return o[email] as string; } catch {}
@@ -161,8 +162,12 @@ export default function Home() {
   const [metric, setMetric] = useState<"payable" | "count">("payable");
   const [search, setSearch] = useState("");
 
-  const [drill, setDrill] = useState<{ type: "month" | "dept" | "batch"; key: string } | null>(null);
+  const [drill, setDrill] = useState<{ type: "month" | "dept" | "batch" | "status"; key: string } | null>(null);
+  const [drillHist, setDrillHist] = useState<{ type: string; key: string }[]>([]);
   const [drillStatus, setDrillStatus] = useState("All");
+  const [drillDept, setDrillDept] = useState("All");
+  const [drillBatch, setDrillBatch] = useState("All");
+  const [drillMonth, setDrillMonth] = useState("All");
   const [galleryDim, setGalleryDim] = useState<"dept" | "batch" | "month">("dept");
   const [user, setUser] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -228,23 +233,45 @@ export default function Home() {
   // drill data (respects the in-drawer status filter)
   const drillData = useMemo(() => {
     if (!drill) return null;
-    let rows = all.filter((r) => (drill.type === "month" ? r.monthKey === drill.key : drill.type === "dept" ? r.dept === drill.key : r.batch === drill.key));
-    if (drillStatus !== "All") rows = rows.filter((r) => r.status === drillStatus);
+    const base = all.filter((r) => (drill.type === "month" ? r.monthKey === drill.key : drill.type === "dept" ? r.dept === drill.key : drill.type === "batch" ? r.batch === drill.key : r.status === drill.key));
+    let rows = base;
+    if (drill.type !== "status" && drillStatus !== "All") rows = rows.filter((r) => r.status === drillStatus);
+    if (drillDept !== "All") rows = rows.filter((r) => r.dept === drillDept);
+    if (drillBatch !== "All") rows = rows.filter((r) => r.batch === drillBatch);
+    if (drillMonth !== "All") rows = rows.filter((r) => r.monthKey === drillMonth);
     const pays = rows.map((r) => r.payable);
-    const byDept = groupSum(rows, (r) => r.dept, "payable").sort((a, b) => b.val - a.val);
-    const byBatch = groupSum(rows, (r) => "Batch " + r.batch, "payable").sort((a, b) => b.val - a.val);
-    const byMonth = uniq(rows.map((r) => r.monthKey)).sort().map((k) => ({ name: all.find((r) => r.monthKey === k)?.monthLbl || k, val: rows.filter((r) => r.monthKey === k).reduce((a, r) => a + r.payable, 0) }));
+    const byDept = groupSum(rows, (r) => r.dept, "payable").sort((a, b) => b.val - a.val).map((x) => ({ ...x, d: { type: "dept", key: x.name } }));
+    const byBatch = groupSum(rows, (r) => "Batch " + r.batch, "payable").sort((a, b) => b.val - a.val).map((x) => ({ ...x, d: { type: "batch", key: x.name.replace("Batch ", "") } }));
+    const byMonth = uniq(rows.map((r) => r.monthKey)).filter((k) => k !== "zzz").sort().map((k) => ({ name: all.find((r) => r.monthKey === k)?.monthLbl || k, val: rows.filter((r) => r.monthKey === k).reduce((a, r) => a + r.payable, 0), d: { type: "month", key: k } }));
     const byStatus = groupSum(rows, (r) => r.status, "count");
+    const optDepts = uniq(base.map((r) => r.dept)).sort();
+    const optBatches = uniq(base.map((r) => r.batch)).sort((a, b) => Number(a.replace(/\D/g, "")) - Number(b.replace(/\D/g, "")));
+    const optMonths = uniq(base.map((r) => r.monthKey)).filter((k) => k !== "zzz").sort().map((k) => ({ v: k, label: all.find((r) => r.monthKey === k)?.monthLbl || k }));
     return {
-      rows, byDept, byBatch, byMonth, byStatus,
+      rows, byDept, byBatch, byMonth, byStatus, optDepts, optBatches, optMonths,
       pay: sum(rows, "payable"), req: sum(rows, "requested"), trim: sum(rows, "trim"),
       emps: uniq(rows.map((r) => r.email || r.empId)).length,
       max: pays.length ? Math.max(...pays) : 0, min: pays.length ? Math.min(...pays) : 0,
       avg: rows.length ? sum(rows, "payable") / rows.length : 0,
     };
-  }, [drill, drillStatus, all]);
+  }, [drill, drillStatus, drillDept, drillBatch, drillMonth, all]);
 
-  const openDrill = (type: "month" | "dept" | "batch", key: string) => { setDrillStatus("All"); setDrill({ type, key }); };
+  const resetSub = () => { setDrillStatus("All"); setDrillDept("All"); setDrillBatch("All"); setDrillMonth("All"); };
+  const openDrill = (type: "month" | "dept" | "batch" | "status", key: string) => { resetSub(); setDrillHist([]); setDrill({ type, key }); };
+  const drillInto = (type: "month" | "dept" | "batch" | "status", key: string) => {
+    const prev = drill;
+    if (prev) setDrillHist((h) => [...h, prev]);
+    resetSub();
+    if (prev) {
+      if (prev.type === "month") setDrillMonth(prev.key);
+      else if (prev.type === "dept") setDrillDept(prev.key);
+      else if (prev.type === "batch") setDrillBatch(prev.key);
+      else if (prev.type === "status") setDrillStatus(prev.key);
+    }
+    setDrill({ type, key });
+  };
+  const drillBack = () => { if (!drillHist.length) return; const prev = drillHist[drillHist.length - 1]; setDrillHist(drillHist.slice(0, -1)); resetSub(); setDrill(prev as { type: "month" | "dept" | "batch" | "status"; key: string }); };
+  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape") setDrill(null); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
 
   /* ---------- render ---------- */
   const font = { fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' };
@@ -326,9 +353,14 @@ export default function Home() {
         <>
           <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setDrill(null)} />
           <aside className="fixed top-0 right-0 h-full w-full sm:w-[440px] bg-white z-50 shadow-2xl overflow-y-auto">
-            <DrillPanel drill={drill} data={drillData} drillStatus={drillStatus} setDrillStatus={setDrillStatus} statuses={statuses}
-              onClose={() => setDrill(null)}
-              onApply={() => { if (drill.type === "month") setFMonth(drill.key); else if (drill.type === "dept") setFDept(drill.key); else setFBatch(drill.key); if (drillStatus !== "All") setFStatus(drillStatus); setTab("analytics"); setDrill(null); }} />
+            <DrillPanel drill={drill} data={drillData} statuses={statuses}
+              drillStatus={drillStatus} setDrillStatus={setDrillStatus}
+              drillDept={drillDept} setDrillDept={setDrillDept}
+              drillBatch={drillBatch} setDrillBatch={setDrillBatch}
+              drillMonth={drillMonth} setDrillMonth={setDrillMonth}
+              onDrill={drillInto} onBack={drillBack} canBack={drillHist.length > 0}
+              onClose={() => { setDrill(null); setDrillHist([]); }}
+              onApply={() => { if (drill.type === "month") setFMonth(drill.key); else if (drill.type === "dept") setFDept(drill.key); else if (drill.type === "batch") setFBatch(drill.key); else setFStatus(drill.key); if (drill.type !== "status" && drillStatus !== "All") setFStatus(drillStatus); setTab("analytics"); setDrill(null); setDrillHist([]); }} />
           </aside>
         </>
       )}
@@ -394,8 +426,12 @@ function Overview({ all, paidAll, pending, series, insights, onDrill }: any) {
             <div style={{ width: cleared / total * 100 + "%", background: FLAME }} />
             <div style={{ width: under / total * 100 + "%", background: SMOKE }} />
           </div>
-          <Row2 color={FLAME} label="Payment Cleared" value={`${cleared} (${Math.round(cleared / total * 100)}%)`} />
-          <Row2 color={SMOKE} label="Payment Under Process" value={`${under} (${Math.round(under / total * 100)}%)`} />
+          {([["Payment Cleared", cleared, FLAME], ["Payment Under Process", under, SMOKE]] as const).map(([name, cnt, col]) => (
+            <button key={name} onClick={() => onDrill("status", name)} className="w-full flex items-center justify-between text-sm py-1.5">
+              <span className="inline-flex items-center gap-2" style={{ color: CHARCOAL }}><span className="w-3 h-3 rounded-full inline-block" style={{ background: col }} />{name}</span>
+              <span className="font-medium tabular-nums" style={{ color: GREASE }}>{cnt} ({Math.round(cnt / total * 100)}%) <span style={{ color: FLAME }}>→</span></span>
+            </button>
+          ))}
           <div className="mt-4 pt-4 text-sm" style={{ borderTop: `1px solid ${CLOUD}`, color: CHARCOAL }}>
             Pending outflow <b style={{ color: GREASE }}>{pkr(sum(pending, "payable"))}</b> not yet paid.
           </div>
@@ -463,13 +499,13 @@ function Analytics({ filtered, series, insights, metric, pending, onDrill }: any
       <Card title="Requested vs payable" hint="By month">
         <div className="flex items-end gap-2 md:gap-3 h-48">
           {monthAgg.map((m: any) => (
-            <div key={m.key} className="flex-1 h-full flex flex-col items-center">
+            <button key={m.key} onClick={() => onDrill("month", m.key)} className="flex-1 h-full flex flex-col items-center">
               <div className="flex-1 w-full flex items-end justify-center gap-1">
                 <div className="w-2.5 rounded-t" style={{ height: m.req / maxRP * 100 + "%", background: SMOKE }} title={`Requested ${short(m.req)}`} />
                 <div className="w-2.5 rounded-t" style={{ height: m.pay / maxRP * 100 + "%", background: FLAME }} title={`Payable ${short(m.pay)}`} />
               </div>
               <span className="mt-2 text-[11px]" style={{ color: CHARCOAL }}>{m.label}</span>
-            </div>
+            </button>
           ))}
         </div>
         <div className="flex gap-4 mt-3 text-xs" style={{ color: CHARCOAL }}>
@@ -530,9 +566,9 @@ function ClaimsTable({ rows, search, onDrill }: any) {
 }
 
 /* ================= DRILL PANEL ================= */
-function DrillPanel({ drill, data, drillStatus, setDrillStatus, statuses, onClose, onApply }: any) {
+function DrillPanel({ drill, data, statuses, drillStatus, setDrillStatus, drillDept, setDrillDept, drillBatch, setDrillBatch, drillMonth, setDrillMonth, onDrill, onBack, canBack, onClose, onApply }: any) {
   const title = drill.type === "month" ? (data.rows[0]?.monthLbl || drill.key) : drill.type === "batch" ? "Batch " + drill.key : drill.key;
-  const sub = drill.type === "month" ? "Payment month" : drill.type === "batch" ? "Payment batch" : "Department";
+  const sub = drill.type === "month" ? "Payment month" : drill.type === "batch" ? "Payment batch" : drill.type === "status" ? "Payment status" : "Department";
   const ranked = drill.type === "dept" ? data.byMonth : data.byDept;
   const rankLabel = drill.type === "dept" ? "By month" : "By department";
   const secondary = drill.type === "dept" ? data.byBatch : drill.type === "month" ? data.byBatch : data.byMonth;
@@ -544,11 +580,16 @@ function DrillPanel({ drill, data, drillStatus, setDrillStatus, statuses, onClos
   return (
     <div className="p-5">
       <div className="flex items-start justify-between">
-        <div><div className="text-xs uppercase tracking-wide" style={{ color: SMOKE }}>{sub}</div><h3 className="text-xl font-bold" style={{ color: GREASE }}>{title}</h3></div>
+        <div>
+          {canBack && <button onClick={onBack} className="text-xs font-semibold mb-1 inline-block" style={{ color: FLAME }}>← Back</button>}
+          <div className="text-xs uppercase tracking-wide" style={{ color: SMOKE }}>{sub}</div>
+          <h3 className="text-xl font-bold" style={{ color: GREASE }}>{title}</h3>
+        </div>
         <button onClick={onClose} className="text-2xl leading-none px-2" style={{ color: CHARCOAL }}>×</button>
       </div>
 
       {/* in-drawer status filter */}
+      {drill.type !== "status" && (
       <div className="flex gap-1 mt-4 rounded-lg p-1" style={{ background: PAGE }}>
         {["All", ...statuses].map((s: string) => (
           <button key={s} onClick={() => setDrillStatus(s)} className="flex-1 py-1.5 rounded-md text-xs font-medium"
@@ -556,6 +597,29 @@ function DrillPanel({ drill, data, drillStatus, setDrillStatus, statuses, onClos
             {s === "Payment Cleared" ? "Cleared" : s === "Payment Under Process" ? "Pending" : s}
           </button>
         ))}
+      </div>
+      )}
+
+      {/* extra drill filters */}
+      <div className="flex flex-wrap gap-2 mt-2">
+        {drill.type !== "month" && (
+          <select value={drillMonth} onChange={(e) => setDrillMonth(e.target.value)} className="flex-1 min-w-[6.5rem] px-2 py-1.5 text-xs rounded-lg border bg-white" style={{ borderColor: CLOUD, color: GREASE }}>
+            <option value="All">All months</option>
+            {data.optMonths.map((m: any) => <option key={m.v} value={m.v}>{m.label}</option>)}
+          </select>
+        )}
+        {drill.type !== "dept" && (
+          <select value={drillDept} onChange={(e) => setDrillDept(e.target.value)} className="flex-1 min-w-[6.5rem] px-2 py-1.5 text-xs rounded-lg border bg-white" style={{ borderColor: CLOUD, color: GREASE }}>
+            <option value="All">All departments</option>
+            {data.optDepts.map((d: string) => <option key={d} value={d}>{d}</option>)}
+          </select>
+        )}
+        {drill.type !== "batch" && (
+          <select value={drillBatch} onChange={(e) => setDrillBatch(e.target.value)} className="flex-1 min-w-[6.5rem] px-2 py-1.5 text-xs rounded-lg border bg-white" style={{ borderColor: CLOUD, color: GREASE }}>
+            <option value="All">All batches</option>
+            {data.optBatches.map((b: string) => <option key={b} value={b}>Batch {b}</option>)}
+          </select>
+        )}
       </div>
 
       {/* richer stats */}
@@ -570,8 +634,8 @@ function DrillPanel({ drill, data, drillStatus, setDrillStatus, statuses, onClos
         <Stat label="Smallest claim" value={pkr(data.min)} />
       </div>
 
-      <PanelBars title={rankLabel} rows={ranked} max={maxR} />
-      <PanelBars title={secLabel} rows={secondary} max={maxS} />
+      <PanelBars title={rankLabel} rows={ranked} max={maxR} onPick={onDrill} />
+      <PanelBars title={secLabel} rows={secondary} max={maxS} onPick={onDrill} />
 
       <div className="mt-5">
         <div className="text-sm font-semibold mb-2" style={{ color: GREASE }}>Status</div>
@@ -693,18 +757,23 @@ function BarList({ rows, max, onClick, fmt }: any) {
     </div>
   );
 }
-function PanelBars({ title, rows, max }: any) {
+function PanelBars({ title, rows, max, onPick }: any) {
+  const clickable = onPick && rows.some((x: any) => x.d);
   return (
     <div className="mt-5">
-      <div className="text-sm font-semibold mb-2" style={{ color: GREASE }}>{title}</div>
+      <div className="text-sm font-semibold mb-2" style={{ color: GREASE }}>{title}{clickable && <span className="font-normal ml-2" style={{ color: SMOKE, fontSize: 11 }}>click to drill in</span>}</div>
       <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-        {rows.map((x: any, i: number) => (
-          <div key={x.name + i} className="flex items-center gap-2">
-            <div className="w-24 shrink-0 text-xs truncate" style={{ color: CHARCOAL }}>{x.name}</div>
-            <div className="flex-1 h-2.5 rounded-full overflow-hidden" style={{ background: TRACK }}><div className="h-2.5 rounded-full" style={{ width: x.val / max * 100 + "%", background: redShade(x.val, max) }} /></div>
-            <div className="w-14 shrink-0 text-right text-xs font-medium tabular-nums" style={{ color: GREASE }}>{short(x.val)}</div>
-          </div>
-        ))}
+        {rows.map((x: any, i: number) => {
+          const can = !!(x.d && onPick);
+          const El: any = can ? "button" : "div";
+          return (
+            <El key={x.name + i} onClick={can ? () => onPick(x.d.type, x.d.key) : undefined} className="w-full flex items-center gap-2 text-left rounded-md" style={can ? { cursor: "pointer" } : undefined}>
+              <div className="w-24 shrink-0 text-xs truncate" style={{ color: can ? FLAME : CHARCOAL }}>{x.name}</div>
+              <div className="flex-1 h-2.5 rounded-full overflow-hidden" style={{ background: TRACK }}><div className="h-2.5 rounded-full" style={{ width: x.val / max * 100 + "%", background: redShade(x.val, max) }} /></div>
+              <div className="w-14 shrink-0 text-right text-xs font-medium tabular-nums" style={{ color: GREASE }}>{short(x.val)}</div>
+            </El>
+          );
+        })}
         {!rows.length && <div className="text-xs" style={{ color: SMOKE }}>None</div>}
       </div>
     </div>
@@ -738,6 +807,8 @@ function Row2({ color, label, value }: any) {
 function Th({ children, right }: any) { return <th className={`py-2 px-2 font-medium ${right ? "text-right" : "text-left"}`}>{children}</th>; }
 function Td({ children, right }: any) { return <td className={`py-2 px-2 tabular-nums ${right ? "text-right" : "text-left"}`} style={{ color: CHARCOAL }}>{children}</td>; }
 function Gallery({ rows, dim, setDim, onDrill }: any) {
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<"amount" | "claims" | "name">("amount");
   const groups = useMemo(() => {
     const keyFn = dim === "dept" ? (r: Row) => r.dept : dim === "batch" ? (r: Row) => r.batch : (r: Row) => r.monthKey;
     const m = new Map<string, Row[]>();
@@ -747,20 +818,47 @@ function Gallery({ rows, dim, setDim, onDrill }: any) {
       k, label: label(k),
       pay: rs.reduce((a, r) => a + r.payable, 0), req: rs.reduce((a, r) => a + r.requested, 0),
       claims: rs.length, emps: new Set(rs.map((r) => r.email || r.empId)).size,
-    })).sort((a, b) => dim === "batch" ? Number(a.k.replace(/\D/g, "")) - Number(b.k.replace(/\D/g, "")) : b.pay - a.pay);
+    }));
   }, [rows, dim]);
   const max = Math.max(1, ...groups.map((g) => g.pay));
   const drillType = dim === "dept" ? "dept" : dim === "batch" ? "batch" : "month";
 
+  const shown = useMemo(() => {
+    let g = groups.filter((x) => x.label.toLowerCase().includes(q.trim().toLowerCase()));
+    if (sort === "amount") g = [...g].sort((a, b) => b.pay - a.pay);
+    else if (sort === "claims") g = [...g].sort((a, b) => b.claims - a.claims);
+    else g = [...g].sort((a, b) => dim === "batch" ? Number(a.k.replace(/\D/g, "")) - Number(b.k.replace(/\D/g, "")) : a.label.localeCompare(b.label));
+    return g;
+  }, [groups, q, sort, dim]);
+
+  const exportCsv = () => {
+    const head = ["Name", "Paid", "Requested", "Trimmed", "Claims", "People"];
+    const lines = shown.map((g) => [g.label, Math.round(g.pay), Math.round(g.req), Math.round(Math.max(0, g.req - g.pay)), g.claims, g.emps]);
+    const csv = [head, ...lines].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    try {
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+      const a = document.createElement("a"); a.href = url; a.download = `opd-${dim}.csv`; a.click(); URL.revokeObjectURL(url);
+    } catch {}
+  };
+
   return (
     <>
-      <div className="flex gap-1 rounded-lg p-1 bg-white w-fit" style={{ border: `1px solid ${CLOUD}` }}>
-        {([["dept", "By department"], ["batch", "By batch"], ["month", "By month"]] as const).map(([d, l]) => (
-          <button key={d} onClick={() => setDim(d)} className="px-3 py-1.5 rounded-md text-sm font-medium" style={{ background: dim === d ? FLAME : "transparent", color: dim === d ? "#fff" : CHARCOAL }}>{l}</button>
-        ))}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex gap-1 rounded-lg p-1 bg-white" style={{ border: `1px solid ${CLOUD}` }}>
+          {([["dept", "By department"], ["batch", "By batch"], ["month", "By month"]] as const).map(([d, l]) => (
+            <button key={d} onClick={() => setDim(d)} className="px-3 py-1.5 rounded-md text-sm font-medium" style={{ background: dim === d ? FLAME : "transparent", color: dim === d ? "#fff" : CHARCOAL }}>{l}</button>
+          ))}
+        </div>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" className="px-3 py-2 text-sm rounded-lg border bg-white" style={{ borderColor: CLOUD, color: GREASE }} />
+        <select value={sort} onChange={(e) => setSort(e.target.value as "amount" | "claims" | "name")} className="px-3 py-2 text-sm rounded-lg border bg-white" style={{ borderColor: CLOUD, color: GREASE }}>
+          <option value="amount">Sort: Amount</option>
+          <option value="claims">Sort: Claims</option>
+          <option value="name">Sort: Name</option>
+        </select>
+        <button onClick={exportCsv} className="ml-auto px-3 py-2 text-sm font-medium rounded-lg border bg-white" style={{ borderColor: CLOUD, color: GREASE }}>Export CSV</button>
       </div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
-        {groups.map((g) => (
+        {shown.map((g) => (
           <button key={g.k} onClick={() => onDrill(drillType, g.k)} className="text-left rounded-2xl bg-white border p-5 hover:shadow-md transition-shadow" style={{ borderColor: CLOUD }}>
             <div className="flex items-start justify-between gap-2">
               <div className="font-semibold truncate" style={{ color: GREASE }}>{g.label}</div>
@@ -773,9 +871,10 @@ function Gallery({ rows, dim, setDim, onDrill }: any) {
               <span>Trimmed {short(Math.max(0, g.req - g.pay))}</span>
               <span>{g.emps} people</span>
             </div>
+            <div className="mt-3 pt-3 text-xs font-semibold flex items-center justify-end gap-1" style={{ borderTop: `1px solid ${CLOUD}`, color: FLAME }}>View details <span aria-hidden>→</span></div>
           </button>
         ))}
-        {!groups.length && <div className="text-sm col-span-full" style={{ color: SMOKE }}>No claims match these filters.</div>}
+        {!shown.length && <div className="text-sm col-span-full" style={{ color: SMOKE }}>No results.</div>}
       </div>
     </>
   );
